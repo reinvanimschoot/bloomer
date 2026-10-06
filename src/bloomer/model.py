@@ -1,4 +1,4 @@
-from torch import nn
+from torch import nn, torch
 from torchvision import models
 
 weights = models.MobileNet_V3_Large_Weights.DEFAULT
@@ -18,3 +18,18 @@ def build_model():
     model.classifier[3] = nn.Linear(1280, 102)
 
     return model
+
+
+def load_model(path="best_model.pt"):
+    model = build_model()
+    model.load_state_dict(torch.load(path, map_location="cpu"))
+    model.eval()
+
+    return model
+
+
+def unfreeze_last_blocks(model, n):
+    start_layer = len(model.features) - n
+
+    for param in model.features[start_layer:].parameters():
+        param.requires_grad = True

@@ -1,7 +1,7 @@
 import onnxruntime as ort
 import torch
 
-from bloomer.predict import load_model
+from bloomer.model import load_model
 
 
 def main() -> None:
