@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Bloomer</title>
+        <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+        <style>
+            :root {
+                --bg: #f7f6f2;
+                --surface: #ffffff;
+                --text: #1f2421;
+                --muted: #6b716d;
+                --border: #dcdcd4;
+                --accent: #3f7d4e;
+                --accent-soft: #e3efe5;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #161917;
+                    --surface: #1f2421;
+                    --text: #eceee9;
+                    --muted: #9aa19c;
+                    --border: #343a36;
+                    --accent: #79b98a;
+                    --accent-soft: #2a3a2e;
+                }
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--text);
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    "Segoe UI",
+                    sans-serif;
+                line-height: 1.5;
+            }
+            main {
+                max-width: 560px;
+                margin: 0 auto;
+                padding: 32px 16px 48px;
+            }
+            h1 {
+                margin: 0 0 4px;
+                font-size: 1.8rem;
+            }
+            .intro {
+                margin: 0 0 24px;
+                color: var(--muted);
+            }
+            .drop {
+                display: block;
+                border: 2px dashed var(--border);
+                border-radius: 12px;
+                background: var(--surface);
+                padding: 32px 16px;
+                text-align: center;
+                cursor: pointer;
+                transition:
+                    border-color 0.15s,
+                    background 0.15s;
+            }
+            .drop:hover,
+            .drop.dragging {
+                border-color: var(--accent);
+                background: var(--accent-soft);
+            }
+            .drop input {
+                display: none;
+            }
+            .drop strong {
+                color: var(--accent);
+            }
+            .status {
+                margin: 16px 0 0;
+                color: var(--muted);
+                font-size: 0.95rem;
+                min-height: 1.5em;
+            }
+            .preview {
+                display: none;
+                width: 100%;
+                max-height: 360px;
+                object-fit: contain;
+                margin-top: 24px;
+                border-radius: 12px;
+                background: var(--surface);
+            }
+            .results {
+                margin-top: 24px;
+                display: none;
+            }
+            .results h2 {
+                font-size: 1.1rem;
+                margin: 0 0 12px;
+            }
+            .row {
+                margin-bottom: 12px;
+            }
+            .row-label {
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                font-size: 0.95rem;
+            }
+            .row-label span:first-child {
+                text-transform: capitalize;
+            }
+            .row-label span:last-child {
+                color: var(--muted);
+                font-variant-numeric: tabular-nums;
+            }
+            .bar {
+                height: 8px;
+                border-radius: 4px;
+                background: var(--accent-soft);
+                overflow: hidden;
+                margin-top: 4px;
+            }
+            .bar div {
+                height: 100%;
+                background: var(--accent);
+            }
+            .row.top .row-label {
+                font-weight: 600;
+            }
+            .note {
+                margin-top: 32px;
+                font-size: 0.85rem;
+                color: var(--muted);
+            }
+            .species {
+                margin-top: 24px;
+                border-top: 1px solid var(--border);
+                padding-top: 16px;
+            }
+            .species summary {
+                cursor: pointer;
+                font-weight: 600;
+            }
+            .species ul {
+                columns: 2;
+                column-gap: 24px;
+                padding-left: 18px;
+                margin: 12px 0 0;
+                font-size: 0.9rem;
+            }
+            .species li {
+                text-transform: capitalize;
+                break-inside: avoid;
+            }
+            @media (max-width: 420px) {
+                .species ul {
+                    columns: 1;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>Bloomer</h1>
+            <p class="intro">
+                Upload a photo of a flower, and a fine-tuned MobileNetV3 guesses
+                which of 102 species it is.
+            </p>
+
+            <label class="drop" id="drop">
+                <input type="file" id="file" accept="image/*" />
+                <div><strong>Choose a photo</strong> or drop it here</div>
+            </label>
+
+            <p class="status" id="status">Loading model…</p>
+
+            <img class="preview" id="preview" alt="Uploaded photo" />
+
+            <section class="results" id="results">
+                <h2>Top 5 guesses</h2>
+                <div id="rows"></div>
+            </section>
+
+            <p class="note">
+                Trained on the Oxford 102 Flowers dataset. It only knows these
+                102 species, so for any other plant it will still pick the
+                closest match. Photos with one flower, filling most of the
+                frame, work best.
+            </p>
+
+            <details class="species">
+                <summary>The 102 species it knows</summary>
+                <ul id="species-list"></ul>
+            </details>
+        </main>
+
+        <script>
+            // Model: the Hugging Face Hub first, then a local bloomer.onnx next to this page.
+            const MODEL_URLS = [
+                "https://huggingface.co/reinvanimschoot/bloomer/resolve/main/bloomer.onnx",
+                "bloomer.onnx",
+            ];
+
+            // Must match eval_transform in data.py.
+            const RESIZE = 256;
+            const CROP = 224;
+            const MEAN = [0.485, 0.456, 0.406];
+            const STD = [0.229, 0.224, 0.225];
+
+            // Class names, in label order (label 0 = pink primrose, ..., label 101 = blackberry lily).
+            const CLASSES = [
+                "pink primrose",
+                "hard-leaved pocket orchid",
+                "canterbury bells",
+                "sweet pea",
+                "english marigold",
+                "tiger lily",
+                "moon orchid",
+                "bird of paradise",
+                "monkshood",
+                "globe thistle",
+                "snapdragon",
+                "colt's foot",
+                "king protea",
+                "spear thistle",
+                "yellow iris",
+                "globe-flower",
+                "purple coneflower",
+                "peruvian lily",
+                "balloon flower",
+                "giant white arum lily",
+                "fire lily",
+                "pincushion flower",
+                "fritillary",
+                "red ginger",
+                "grape hyacinth",
+                "corn poppy",
+                "prince of wales feathers",
+                "stemless gentian",
+                "artichoke",
+                "sweet william",
+                "carnation",
+                "garden phlox",
+                "love in the mist",
+                "mexican aster",
+                "alpine sea holly",
+                "ruby-lipped cattleya",
+                "cape flower",
+                "great masterwort",
+                "siam tulip",
+                "lenten rose",
+                "barbeton daisy",
+                "daffodil",
+                "sword lily",
+                "poinsettia",
+                "bolero deep blue",
+                "wallflower",
+                "marigold",
+                "buttercup",
+                "oxeye daisy",
+                "common dandelion",
+                "petunia",
+                "wild pansy",
+                "primula",
+                "sunflower",
+                "pelargonium",
+                "bishop of llandaff",
+                "gaura",
+                "geranium",
+                "orange dahlia",
+                "pink-yellow dahlia",
+                "cautleya spicata",
+                "japanese anemone",
+                "black-eyed susan",
+                "silverbush",
+                "californian poppy",
+                "osteospermum",
+                "spring crocus",
+                "bearded iris",
+                "windflower",
+                "tree poppy",
+                "gazania",
+                "azalea",
+                "water lily",
+                "rose",
+                "thorn apple",
+                "morning glory",
+                "passion flower",
+                "lotus",
+                "toad lily",
+                "anthurium",
+                "frangipani",
+                "clematis",
+                "hibiscus",
+                "columbine",
+                "desert-rose",
+                "tree mallow",
+                "magnolia",
+                "cyclamen",
+                "watercress",
+                "canna lily",
+                "hippeastrum",
+                "bee balm",
+                "ball moss",
+                "foxglove",
+                "bougainvillea",
+                "camellia",
+                "mallow",
+                "mexican petunia",
+                "bromelia",
+                "blanket flower",
+                "trumpet creeper",
+                "blackberry lily",
+            ];
+
+            const statusEl = document.getElementById("status");
+            const fileInput = document.getElementById("file");
+            const drop = document.getElementById("drop");
+            const preview = document.getElementById("preview");
+            const results = document.getElementById("results");
+            const rows = document.getElementById("rows");
+
+            ort.env.wasm.wasmPaths =
+                "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/";
+
+            let session = null;
+
+            async function loadModel() {
+                for (const url of MODEL_URLS) {
+                    try {
+                        session = await ort.InferenceSession.create(url);
+                        statusEl.textContent =
+                            "Model loaded. Choose a photo to classify.";
+                        return;
+                    } catch (error) {
+                        console.warn(`Could not load model from ${url}`, error);
+                    }
+                }
+                statusEl.textContent = "Could not load the model.";
+            }
+
+            // Resize the short side to RESIZE, then cut out the central CROP x CROP square,
+            // like v2.Resize(256) + v2.CenterCrop(224). Done in one geometry step: take the
+            // central square of the original that ends up as the crop, and scale it to CROP.
+            function resizeAndCrop(img) {
+                const w = img.naturalWidth;
+                const h = img.naturalHeight;
+                const scale = RESIZE / Math.min(w, h);
+                const size = CROP / scale; // crop size in original pixels
+                const sx = (w - size) / 2;
+                const sy = (h - size) / 2;
+
+                // Start with the crop at full resolution.
+                let canvas = document.createElement("canvas");
+                canvas.width = Math.round(size);
+                canvas.height = Math.round(size);
+                let ctx = canvas.getContext("2d");
+                ctx.drawImage(
+                    img,
+                    sx,
+                    sy,
+                    size,
+                    size,
+                    0,
+                    0,
+                    canvas.width,
+                    canvas.height,
+                );
+
+                // Halve repeatedly while still far above the target size. Scaling a large
+                // photo down in one step skips pixels and gives a jagged result; halving
+                // in steps averages them, closer to PyTorch's antialiased resize.
+                while (canvas.width / 2 >= CROP) {
+                    const smaller = document.createElement("canvas");
+                    smaller.width = Math.round(canvas.width / 2);
+                    smaller.height = Math.round(canvas.height / 2);
+                    const sctx = smaller.getContext("2d");
+                    sctx.imageSmoothingQuality = "high";
+                    sctx.drawImage(canvas, 0, 0, smaller.width, smaller.height);
+                    canvas = smaller;
+                }
+
+                const out = document.createElement("canvas");
+                out.width = CROP;
+                out.height = CROP;
+                const octx = out.getContext("2d");
+                octx.imageSmoothingQuality = "high";
+                octx.drawImage(canvas, 0, 0, CROP, CROP);
+                return octx.getImageData(0, 0, CROP, CROP).data;
+            }
+
+            // The browser stores pixels as R, G, B, A, R, G, B, A, ... (pixel by pixel).
+            // The model wants all red values, then all green, then all blue (channel by channel),
+            // each scaled to 0-1 and normalized, like ToDtype(scale=True) + Normalize.
+            function toTensor(pixels) {
+                const area = CROP * CROP;
+                const data = new Float32Array(3 * area);
+                for (let i = 0; i < area; i++) {
+                    for (let c = 0; c < 3; c++) {
+                        const value = pixels[i * 4 + c] / 255;
+                        data[c * area + i] = (value - MEAN[c]) / STD[c];
+                    }
+                }
+                return new ort.Tensor("float32", data, [1, 3, CROP, CROP]);
+            }
+
+            function softmax(logits) {
+                const max = Math.max(...logits);
+                const exps = logits.map((x) => Math.exp(x - max));
+                const sum = exps.reduce((a, b) => a + b, 0);
+                return exps.map((x) => x / sum);
+            }
+
+            function showResults(probabilities) {
+                const top = probabilities
+                    .map((p, label) => ({ label, p }))
+                    .sort((a, b) => b.p - a.p)
+                    .slice(0, 5);
+
+                rows.innerHTML = "";
+                top.forEach(({ label, p }, i) => {
+                    const row = document.createElement("div");
+                    row.className = i === 0 ? "row top" : "row";
+                    const percent = (p * 100).toFixed(1);
+                    row.innerHTML = `
+        <div class="row-label"><span></span><span>${percent}%</span></div>
+        <div class="bar"><div style="width: ${percent}%"></div></div>`;
+                    row.querySelector(".row-label span").textContent =
+                        CLASSES[label];
+                    rows.appendChild(row);
+                });
+                results.style.display = "block";
+            }
+
+            async function classify(file) {
+                if (!session) {
+                    statusEl.textContent =
+                        "The model isn't loaded yet. Try again in a moment.";
+                    return;
+                }
+                if (!file.type.startsWith("image/")) {
+                    statusEl.textContent = "That file isn't an image.";
+                    return;
+                }
+
+                const url = URL.createObjectURL(file);
+                preview.src = url;
+                try {
+                    await preview.decode();
+                } catch {
+                    statusEl.textContent =
+                        "This browser can't read that image format.";
+                    return;
+                }
+                preview.style.display = "block";
+                statusEl.textContent = "Classifying…";
+
+                const tensor = toTensor(resizeAndCrop(preview));
+                const output = await session.run({ input: tensor });
+                const logits = Array.from(output.logits.data);
+                showResults(softmax(logits));
+                statusEl.textContent = "";
+            }
+
+            fileInput.addEventListener("change", () => {
+                if (fileInput.files[0]) classify(fileInput.files[0]);
+            });
+
+            drop.addEventListener("dragover", (event) => {
+                event.preventDefault();
+                drop.classList.add("dragging");
+            });
+            drop.addEventListener("dragleave", () =>
+                drop.classList.remove("dragging"),
+            );
+            drop.addEventListener("drop", (event) => {
+                event.preventDefault();
+                drop.classList.remove("dragging");
+                if (event.dataTransfer.files[0])
+                    classify(event.dataTransfer.files[0]);
+            });
+
+            const speciesList = document.getElementById("species-list");
+            [...CLASSES]
+                .sort((a, b) => a.localeCompare(b))
+                .forEach((name) => {
+                    const item = document.createElement("li");
+                    item.textContent = name;
+                    speciesList.appendChild(item);
+                });
+
+            loadModel();
+        </script>
+    </body>
+</html>
