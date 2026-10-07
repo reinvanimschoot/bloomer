@@ -11,10 +11,11 @@ def print_epoch_report(epoch, train_loss, accuracy, validation_loss):
     )
 
 
-def print_checkpoint(epoch):
-
+def print_early_stop(patience):
     print("----------------------------------------------------------")
-    print("Validation loss increasing for 3 epochs.")
-    print(
-        f"Patience reached, model weights of epoch {epoch} are saved in best_model.pt"
-    )
+    print(f"Validation loss hasn't improved for {patience} epochs, stopping early.")
+
+
+def print_checkpoint(epoch, path):
+    print("----------------------------------------------------------")
+    print(f"Best model: epoch {epoch}, saved in {path}")

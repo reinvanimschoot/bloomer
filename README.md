@@ -2,9 +2,9 @@
 
 Bloomer is an educational project I built as a follow-up to Numberly. Numberly covered the basics of training a network but its model was built from scratch and only had two linear layers. I wanted to learn more about working with an existing, larger, pre-trained model and how to fine-tune it.
 
-Bloomer was built by fine-tuning a pretrained MobileNetV3 model with PyTorch [Oxford 102 Flowers](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/) dataset. The trained model runs entirely in the browser, so the live app is a static site with no backend.
+Bloomer was built by fine-tuning a pretrained MobileNetV3 model with PyTorch on the [Oxford 102 Flowers](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/) dataset. The trained model runs entirely in the browser, so the live app is a static site with no backend.
 
-It allows you to upload a photo of a flower and the model guesses which type it is. The current limitation is that only recognizes 102 species, though.
+It allows you to upload a photo of a flower and the model guesses which type it is. The current limitation is that it only recognizes 102 species, though.
 
 ⚠️ _The web part was built by Claude since it wasn't part of what I wanted to learn about._ ⚠️
 
@@ -33,8 +33,8 @@ Training images are augmented with random crops and horizontal flips, so the mod
 
 ### Training in two stages
 
-1. **Head only.** The whole backbone is frozen and only the new final layer learns: 130,662 of the model's 4.3 million weights. After 20 epochs this reaches about **88%** validation accuracy.
-2. **Fine-tuning.** Starting from that model, the last 3 of the backbone's 17 blocks are unfrozen as well (1.9 million trainable weights). They get a learning rate ten times lower than the head, so they're adjusted rather than overwritten. After 10 more epochs: about **91%**.
+1. **Head only.** The whole backbone is frozen and only the new final layer learns: 130,662 of the model's 4.3 million weights. After up to 20 epochs this reaches about **88%** validation accuracy.
+2. **Fine-tuning.** Starting from the best model of stage 1, the last 3 of the backbone's 17 blocks are unfrozen as well (1.9 million trainable weights). They get a learning rate ten times lower than the head, so they're adjusted rather than overwritten. After up to 10 more epochs: about **91%**.
 
 Unfreezing the last 6 blocks instead gave no improvement and a slightly higher validation loss: with 10 images per class, the extra freedom went into fitting the training images rather than learning anything new.
 
@@ -43,6 +43,7 @@ Throughout, the backbone's BatchNorm layers are kept in evaluation mode, so thei
 - **Loss:** cross-entropy
 - **Optimizer:** Adam; learning rate 0.001 for the head, 0.0001 for the unfrozen blocks
 - **Batch size:** 32
+- **Early stopping:** each stage stops when the validation loss hasn't improved for 3 epochs, and the best checkpoint is kept
 - **Hardware:** trained on a MacBook GPU (PyTorch's MPS backend)
 
 ### Results
@@ -51,8 +52,10 @@ All decisions were made on the validation set. The test set was used once, at th
 
 |            | Accuracy  | Loss     |
 | ---------- | --------- | -------- |
-| Validation | 91.1%     | 0.34     |
-| **Test**   | **90.7%** | **0.36** |
+| Validation | ??%       | ??       |
+| **Test**   | **88.5%** | **0.40** |
+
+The test score is a few points lower than validation. That's expected: the validation set was used to pick the best epoch and the number of unfrozen blocks, which makes its score slightly optimistic. The test set played no part in any decision, and with six times as many images, it covers more of the harder, less typical photos.
 
 ### Preprocessing
 
@@ -69,11 +72,11 @@ The trained PyTorch model is exported to [ONNX](https://onnx.ai/) and run in the
 ```
 bloomer/
 ├── src/bloomer/
-│   ├── data.py       # Oxford 102 datasets, transforms and data loaders
-│   ├── model.py      # building the model (MobileNetV3, frozen, new head) and loading a trained one
+│   ├── data.py       # Oxford 102 transforms and data loaders
+│   ├── model.py      # building the model (MobileNetV3, frozen, new head), unfreezing and loading
 │   ├── training.py   # one training epoch, and validation
 │   ├── report.py     # the per-epoch results table
-│   ├── train.py      # the training command (epochs, early stopping, checkpoint)
+│   ├── train.py      # the training command (both stages, early stopping, checkpoints)
 │   ├── test.py       # the final evaluation on the test set
 │   └── export.py     # exporting the model to ONNX
 ├── web/
@@ -96,7 +99,7 @@ uv sync
 uv run bloomer-train
 ```
 
-Downloads Oxford 102 into `data/` on the first run (about 350 MB) and trains the model.
+Downloads Oxford 102 into `data/` on the first run (about 350 MB) and runs both training stages. The best model of stage 1 is saved to `checkpoint_model_frozen.pt`, the final model to `best_model.pt`.
 
 ### Test
 
@@ -104,7 +107,7 @@ Downloads Oxford 102 into `data/` on the first run (about 350 MB) and trains the
 uv run bloomer-test
 ```
 
-Evaluates the trained model on the 6,149 test images.
+Evaluates `best_model.pt` on the 6,149 test images.
 
 ### Export
 
@@ -112,7 +115,7 @@ Evaluates the trained model on the 6,149 test images.
 uv run bloomer-export
 ```
 
-Exports the model to `bloomer.onnx`, and checks that its output matches the PyTorch model.
+Exports `best_model.pt` to `bloomer.onnx`, and checks that its output matches the PyTorch model.
 
 ### Run the app locally
 
